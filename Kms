@@ -1,0 +1,71 @@
+variable "iam_roles" {
+  type    = list(string)
+  default = ["app-role", "lambda-role"]
+}
+
+resource "aws_iam_role" "roles" {
+  for_each = toset(var.iam_roles)
+
+  name = each.value
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect = "Allow",
+      Principal = {
+        Service = "ec2.amazonaws.com" # or whatever you need
+      },
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+
+
+
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowDynamicIAMRoles",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": ${jsonencode(role_arns)}
+      },
+      "Action": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:ReEncrypt*",
+        "kms:GenerateDataKey*",
+        "kms:DescribeKey",
+        "kms:ListKeys"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+
+
+
+locals {
+  role_arns = [for r in aws_iam_role.roles : r.arn]
+}
+
+data "template_file" "kms_policy" {
+  template = file("${path.module}/kms-policy.tpl")
+
+  vars = {
+    role_arns = local.role_arns
+  }
+}
+
+resource "aws_kms_key" "example" {
+  description             = "KMS key for dynamic roles"
+  deletion_window_in_days = 10
+  enable_key_rotation     = true
+}
+
+resource "aws_kms_key_policy" "example" {
+  key_id = aws_kms_key.example.key_id
+  policy = data.template_file.kms_policy.rendered
+}
+
