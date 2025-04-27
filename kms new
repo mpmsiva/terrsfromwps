@@ -1,0 +1,364 @@
+kms-policy-template.json
+
+
+ {
+  "Version": "2012-10-17",
+  "Id": "key-policy-1",
+  "Statement": [
+    {
+      "Sid": "AllowRootAccount",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::${account_id}:root"
+      },
+      "Action": "kms:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "AllowSpecificRoles",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": ${role_arns_json}
+      },
+      "Action": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:DescribeKey",
+        "kms:GenerateDataKey"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+
+
+
+
+
+2. main.tf
+
+provider "aws" {
+  region = "us-east-1"
+}
+
+# Get AWS account ID
+data "aws_caller_identity" "current" {}
+
+# Lookup multiple IAM roles dynamically
+data "aws_iam_role" "roles" {
+  for_each = toset(var.role_names)
+
+  name = each.value
+}
+
+# Build a list of role ARNs
+locals {
+  role_arns = [for role in data.aws_iam_role.roles : role.arn]
+
+  kms_policy = templatefile("${path.module}/kms-policy-template.json", {
+    account_id      = data.aws_caller_identity.current.account_id
+    role_arns_json  = jsonencode(local.role_arns)
+  })
+}
+
+# Create the KMS key
+resource "aws_kms_key" "this" {
+  description             = "KMS key with multiple role access"
+  policy                  = local.kms_policy
+  enable_key_rotation     = true
+  deletion_window_in_days = 10
+}
+
+# Output Key ID and ARN
+output "kms_key_id" {
+  value = aws_kms_key.this.key_id
+}
+
+output "kms_key_arn" {
+  value = aws_kms_key.this.arn
+}
+
+
+
+ 
+variables.tf
+
+variable "role_names" {
+  description = "List of IAM Role names to grant access to the KMS key"
+  type        = list(string)
+}
+
+
+output "kms_key_arn" {
+  description = "The ARN of the created KMS Key"
+  value       = aws_kms_key.this.arn
+}
+
+
+
+terraform init
+terraform apply -var 'role_names=["RoleOne","RoleTwo","RoleThree"]'
+
+
+
+----------------------------------------------------------------------------------------------------------------------------
+
+
+Insert Multiple IAM Roles into KMS Key Policy Dynamically:
+
+
+kms-policy-template.json
+
+
+{
+  "Version": "2012-10-17",
+  "Id": "key-policy-1",
+  "Statement": [
+    {
+      "Sid": "AllowRootAccountFullAccess",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::${account_id}:root"
+      },
+      "Action": "kms:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "AllowSpecificIAMRoles",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": ${role_arns_json}
+      },
+      "Action": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:DescribeKey",
+        "kms:GenerateDataKey"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+
+
+
+
+${role_arns_json} — it expects a JSON array of role ARNs like:
+
+
+
+[
+  "arn:aws:iam::123456789012:role/RoleOne",
+  "arn:aws:iam::123456789012:role/RoleTwo"
+]
+
+
+
+2. variables.tf
+
+variable "role_names" {
+  description = "List of IAM Role names to allow KMS access"
+  type        = list(string)
+}
+
+
+
+3. main.tf
+
+
+provider "aws" {
+  region = "us-east-1"
+}
+
+# Get AWS Account ID
+data "aws_caller_identity" "current" {}
+
+# Lookup multiple IAM roles dynamically
+data "aws_iam_role" "iam_roles" {
+  for_each = toset(var.role_names)
+  name     = each.value
+}
+
+# Create a list of Role ARNs
+locals {
+  role_arns = [for role in data.aws_iam_role.iam_roles : role.arn]
+
+  # Render the policy by injecting the account_id and the JSON-encoded list of role ARNs
+  kms_policy = templatefile("${path.module}/kms-policy-template.json", {
+    account_id     = data.aws_caller_identity.current.account_id
+    role_arns_json = jsonencode(local.role_arns)
+  })
+}
+
+# Create the KMS key with dynamic policy
+resource "aws_kms_key" "this" {
+  description             = "KMS key allowing multiple IAM roles"
+  policy                  = local.kms_policy
+  enable_key_rotation     = true
+  deletion_window_in_days = 10
+}
+
+# Optional: create a friendly alias
+resource "aws_kms_alias" "this" {
+  name          = "alias/my-example-key"
+  target_key_id = aws_kms_key.this.key_id
+}
+
+# Outputs
+output "kms_key_id" {
+  value = aws_kms_key.this.key_id
+}
+
+output "kms_key_arn" {
+  value = aws_kms_key.this.arn
+}
+
+
+
+How it works step-by-step:
+role_names = input list (like ["RoleOne", "RoleTwo"])
+
+aws_iam_role = data lookup for each role name.
+
+local.role_arns = collect all IAM Role ARNs into a list.
+
+local.kms_policy = load the JSON template and inject:
+
+account_id
+
+role_arns_json (formatted as a JSON list)
+
+Create the KMS key with the full rendered policy.
+
+
+Usage Example:
+terraform init
+terraform apply -var='role_names=["RoleOne", "RoleTwo", "RoleThree"]'
+
+ Terraform will:
+
+Find the roles
+
+Build the final JSON policy dynamically
+
+Create the KMS key
+
+Attach an alias if you want (alias/my-example-key) 
+
+
+
+ Important Notes:
+jsonencode(local.role_arns) is critical — it ensures the list is properly quoted and comma-separated for JSON.
+
+${role_arns_json} must not be quoted manually in the JSON template — the jsonencode already gives you valid JSON.
+
+You can scale easily by adding/removing role names.
+
+
+
+Example Final Rendered KMS Policy
+
+{
+  "Version": "2012-10-17",
+  "Id": "key-policy-1",
+  "Statement": [
+    {
+      "Sid": "AllowRootAccountFullAccess",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::123456789012:root"
+      },
+      "Action": "kms:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "AllowSpecificIAMRoles",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": [
+          "arn:aws:iam::123456789012:role/RoleOne",
+          "arn:aws:iam::123456789012:role/RoleTwo"
+        ]
+      },
+      "Action": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:DescribeKey",
+        "kms:GenerateDataKey"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
